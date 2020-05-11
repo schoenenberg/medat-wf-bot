@@ -2,11 +2,14 @@ use telegram_bot::{prelude::*, Api, Message, MessageKind, ReplyKeyboardMarkup, E
 use std::env;
 use crate::word_generator::WordGenerator;
 use std::collections::HashMap;
+use chrono::{Utc, Datelike};
+use crate::stats::Stats;
 
 pub struct Client {
     pub(crate) api: Api,
     word_generator: WordGenerator,
     open_replies: HashMap<UserId, (usize, String)>,
+    statistics: HashMap<UserId, Stats>,
 }
 
 impl Client {
@@ -17,6 +20,7 @@ impl Client {
             api: Api::new(api_key),
             word_generator: WordGenerator::from_file(file_path),
             open_replies: HashMap::new(),
+            statistics: HashMap::new(),
         }
     }
 
@@ -45,68 +49,79 @@ impl Client {
                         vec![KeyboardButton::new("/E Keine der genannten Optionen")],
                     ]);
 
-                    let status = self.api.send(msg
+                    self.api.send(msg
                         .text_reply(format!("*{}*", chars))
                         .parse_mode(ParseMode::Markdown)
                         .reply_markup(keyboard)
-                    ).await;
+                    ).await.expect("Msg could not be send.");
 
                     self.open_replies.insert(msg.from.id, (correct_option, word));
+                    if !self.statistics.contains_key(&msg.from.id) {
+                        self.statistics.insert(msg.from.id.clone(), Stats::default());
+                    }
+                }
+                "/A" => self.respond_to_answer(0, &msg).await,
+                "/B" => self.respond_to_answer(1, &msg).await,
+                "/C" => self.respond_to_answer(2, &msg).await,
+                "/D" => self.respond_to_answer(3, &msg).await,
+                "/E" => self.respond_to_answer(4, &msg).await,
+                "/stats" => {
+                    if !self.statistics.contains_key(&msg.from.id) {
+                        self.statistics.insert(msg.from.id.clone(), Stats::default());
+                    }
 
-                    println!("{:?}", status)
+                    let stats = self.statistics.get(&msg.from.id).unwrap();
+                    self.api.send(msg
+                        .text_reply(stats.stats())
+                        .parse_mode(ParseMode::Markdown)
+                        .reply_markup(Self::standard_keyboard())
+                    ).await.expect("Msg could not be send.");
                 }
-                "/A" => {
-                    self.respond_to_answer(0, &msg).await;
-                }
-                "/B" => {
-                    self.respond_to_answer(1, &msg).await;
-                }
-                "/C" => {
-                    self.respond_to_answer(2, &msg).await;
-                }
-                "/D" => {
-                    self.respond_to_answer(3, &msg).await;
-                }
-                "/E" => {
-                    self.respond_to_answer(4, &msg).await;
+                "/reset_stats" => {
+                    if let Some(stats) = self.statistics.get_mut(&msg.from.id) {
+                        stats.reset();
+                    }
+                    self.api.send(msg
+                        .text_reply("Statistiken sind zurückgesetzt!")
+                        .parse_mode(ParseMode::Markdown)
+                        .reply_markup(Self::standard_keyboard())
+                    ).await.expect("Msg could not be send.");
                 }
                 "/help" => {
-                    let keyboard = ReplyKeyboardMarkup::from(vec![
-                        vec![KeyboardButton::new("/new")],
-                        vec![KeyboardButton::new("/stats"), KeyboardButton::new("/reset-stats")],
-                        vec![KeyboardButton::new("/help"), KeyboardButton::new("/version")],
-                    ]);
-
-                    let status = self.api.send(msg
-                        .text_reply(
-                            "Dieser Bot bietet folgende Kommandos:\n\
-                            - /new, /next: Nächstes Wort fragen\n\
-                            - /stats: Statistiken anzeigen\n\
-                            - /reset-stats: Statistiken zurücksetzen\n\
-                            - /help: Ausgabe dieses Hilfe-Textes\n\
-                            - /version: Versions-Informationen")
+                    self.api.send(msg
+                        .text_reply(Self::help())
                         .parse_mode(ParseMode::Markdown)
-                        .reply_markup(keyboard)
-                    ).await;
-                    println!("{:?}", status)
+                        .reply_markup(Self::standard_keyboard())
+                    ).await.expect("Msg could not be send.");
+                }
+                "/version" => {
+                    self.api.send(
+                        msg.text_reply(Self::version())
+                            .parse_mode(ParseMode::Markdown)
+                            .reply_markup(Self::standard_keyboard())
+                    ).await.expect("Msg could not be send.");
                 }
                 _ => {
-                    self.api.send(msg.text_reply(
-                        format!("Unknown command: {}", data))
-                    ).await?;
+                    self.api.send(msg
+                        .text_reply(format!("Unbekanntes Kommando: {}", data))
+                        .reply_markup(Self::standard_keyboard())
+                    ).await.expect("Msg could not be send.");
                 }
             }
         }
         Ok(())
     }
 
-    async fn respond_to_answer(&self, option: usize, msg: &Message) {
+    async fn respond_to_answer(&mut self, option: usize, msg: &Message) {
         if let MessageKind::Text { data: _, .. } = msg.kind {
             let correct_value = self.open_replies.get(&msg.from.id);
             let answer = if let Some((correct_option, correct_word)) = correct_value {
+                let stats = self.statistics.get_mut(&msg.from.id).unwrap();
                 if *correct_option == option {
+                    stats.add_correct();
                     format!("*Korrekt!*\nDas Wort war: {}", correct_word)
                 } else {
+                    stats.add_wrong();
                     format!("*Falsch!*\nDas Wort war: {}", correct_word)
                 }
             } else {
@@ -118,13 +133,35 @@ impl Client {
                 vec![KeyboardButton::new("/stats"), KeyboardButton::new("/help")],
             ]);
 
-            let status = self.api.send(msg
+            self.api.send(msg
                 .text_reply(answer)
                 .parse_mode(ParseMode::Markdown)
                 .reply_markup(keyboard)
-            ).await;
-
-            println!("{:?}", status);
+            ).await.expect("Msg could not be send.");
         }
+    }
+
+    fn standard_keyboard() -> ReplyKeyboardMarkup {
+        ReplyKeyboardMarkup::from(vec![
+            vec![KeyboardButton::new("/new")],
+            vec![KeyboardButton::new("/stats"), KeyboardButton::new("/reset_stats")],
+            vec![KeyboardButton::new("/help"), KeyboardButton::new("/version")],
+        ])
+    }
+
+    fn help() -> String {
+        "Dieser Bot bietet folgende Kommandos:\n\
+        - /new, /next: Nächstes Wort fragen\n\
+        - /stats: Statistiken anzeigen\n\
+        - /reset\\_stats: Statistiken zurücksetzen\n\
+        - /help: Ausgabe dieses Hilfe-Textes\n\
+        - /version: Versions-Informationen".to_string()
+    }
+
+    fn version() -> String {
+        const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+        const AUTHORS: &'static str = env!("CARGO_PKG_AUTHORS");
+        //const DESCRIPTION: &'static str = env!("CARGO_PKG_DESCRIPTION");
+        format!("Version: *{}*\n(c) {} by {}", VERSION, Utc::now().date().year(), AUTHORS)
     }
 }

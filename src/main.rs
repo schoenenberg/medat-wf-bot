@@ -4,6 +4,7 @@ use futures::StreamExt;
 
 mod client;
 mod word_generator;
+mod stats;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
