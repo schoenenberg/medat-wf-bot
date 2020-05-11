@@ -6,13 +6,18 @@ use std::collections::HashMap;
 pub struct Client {
     pub(crate) api: Api,
     word_generator: WordGenerator,
-    open_replies: HashMap<UserId, (usize,String)>,
+    open_replies: HashMap<UserId, (usize, String)>,
 }
 
 impl Client {
     pub async fn new() -> Self {
-        let api = Api::new(env::var("API_KEY").expect("Missing API_KEY.").as_str());
-        Client { api, word_generator: WordGenerator::from_file("words.txt".to_string()), open_replies: HashMap::new() }
+        let api_key = env::var("API_KEY").expect("Missing API_KEY.");
+        let file_path = env::var("WORDS_PATH").expect("Missing WORDS_PATH");
+        Client {
+            api: Api::new(api_key),
+            word_generator: WordGenerator::from_file(file_path),
+            open_replies: HashMap::new(),
+        }
     }
 
     pub(crate) async fn process_msg(&mut self, msg: Message) -> Result<(), Error> {
@@ -46,7 +51,7 @@ impl Client {
                         .reply_markup(keyboard)
                     ).await;
 
-                    self.open_replies.insert(msg.from.id, (correct_option,word));
+                    self.open_replies.insert(msg.from.id, (correct_option, word));
 
                     println!("{:?}", status)
                 }
